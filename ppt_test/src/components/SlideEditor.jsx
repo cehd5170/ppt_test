@@ -217,53 +217,154 @@ const SlideEditor = () => {
       
       return slideTexts.map((slideText, index) => {
         const trimmedText = slideText.trim();
+        const elements = [];
         
-        // 使用 marked 解析 HTML
-        const htmlContent = marked.parse(trimmedText);
-        
-        // 提取標題作為主要元素
-        const titleMatch = trimmedText.match(/^#\s+(.+)$/m);
-        const title = titleMatch ? titleMatch[1] : `投影片 ${index + 1}`;
-        
-        const elements = [
-          {
-            id: `title-${index}`,
-            type: 'text',
-            content: title,
-            position: { x: 100, y: 100 },
-            size: { width: 600, height: 80 },
-            rotation: 0,
-            style: { fontSize: '2.5rem', fontWeight: 'bold', color: '#2c3e50', textAlign: 'center' }
-          }
-        ];
-        
-        // 如果有更多內容，添加為文字元素
-        const contentWithoutTitle = trimmedText.replace(/^#.+$/m, '').trim();
-        if (contentWithoutTitle) {
-          elements.push({
-            id: `content-${index}`,
-            type: 'text',
-            content: marked.parse(contentWithoutTitle),
-            position: { x: 100, y: 200 },
-            size: { width: 600, height: 300 },
-            rotation: 0,
-            style: { fontSize: '1.2rem', color: '#2c3e50' }
-          });
-        }
-        
-        // 檢查是否有特殊形狀標記
+        // 檢查是否有特殊形狀標記（在 marked 解析前處理）
         const shapeMatch = trimmedText.match(/\[shape:(\w+):(\w+):(.+)\]/);
+        let contentForMarked = trimmedText;
+        
         if (shapeMatch) {
-          const [, shapeType, color, labels] = shapeMatch;
+          const [fullMatch, shapeType, color, labels] = shapeMatch;
+          // 移除形狀標記，避免被 marked 解析
+          contentForMarked = trimmedText.replace(fullMatch, '').trim();
+          
+          // 添加形狀元素
           elements.push({
             id: `shape-${index}`,
             type: 'shape',
             shapeType: shapeType,
             color: color,
             labels: labels.split(',').map(l => l.trim()),
-            position: { x: 200, y: 250 },
+            position: { x: 200, y: 300 },
             size: { width: 400, height: 300 },
             rotation: 0
+          });
+        }
+        
+        // 使用 marked 解析剩餘的 Markdown 內容
+        const htmlContent = marked.parse(contentForMarked);
+        
+        // 將 HTML 轉換為可編輯的元素
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = htmlContent;
+        
+        let yPosition = 100;
+        
+        // 處理標題元素
+        const headings = tempDiv.querySelectorAll('h1, h2, h3, h4, h5, h6');
+        headings.forEach((heading, headingIndex) => {
+          const level = parseInt(heading.tagName.charAt(1));
+          elements.push({
+            id: `heading-${index}-${headingIndex}`,
+            type: 'text',
+            content: heading.innerHTML,
+            position: { x: 100, y: yPosition },
+            size: { width: 600, height: 60 + (20 * (4 - level)) },
+            rotation: 0,
+            style: { 
+              fontSize: `${3 - (level * 0.3)}rem`,
+              fontWeight: level <= 2 ? 'bold' : 'normal',
+              color: level === 1 ? '#2c3e50' : '#34495e',
+              textAlign: level <= 2 ? 'center' : 'left'
+            }
+          });
+          yPosition += 80 + (10 * (4 - level));
+        });
+        
+        // 處理段落元素
+        const paragraphs = tempDiv.querySelectorAll('p');
+        paragraphs.forEach((paragraph, pIndex) => {
+          if (paragraph.innerHTML.trim()) {
+            elements.push({
+              id: `paragraph-${index}-${pIndex}`,
+              type: 'text',
+              content: paragraph.innerHTML,
+              position: { x: 100, y: yPosition },
+              size: { width: 600, height: 80 },
+              rotation: 0,
+              style: { 
+                fontSize: '1.2rem', 
+                color: '#2c3e50',
+                lineHeight: '1.6'
+              }
+            });
+            yPosition += 100;
+          }
+        });
+        
+        // 處理列表元素
+        const lists = tempDiv.querySelectorAll('ul, ol');
+        lists.forEach((list, listIndex) => {
+          elements.push({
+            id: `list-${index}-${listIndex}`,
+            type: 'text',
+            content: list.outerHTML,
+            position: { x: 100, y: yPosition },
+            size: { width: 600, height: list.children.length * 40 + 40 },
+            rotation: 0,
+            style: { 
+              fontSize: '1.1rem', 
+              color: '#2c3e50',
+              lineHeight: '1.8'
+            }
+          });
+          yPosition += list.children.length * 40 + 60;
+        });
+        
+        // 處理程式碼區塊
+        const codeBlocks = tempDiv.querySelectorAll('pre');
+        codeBlocks.forEach((codeBlock, codeIndex) => {
+          elements.push({
+            id: `code-${index}-${codeIndex}`,
+            type: 'text',
+            content: codeBlock.outerHTML,
+            position: { x: 100, y: yPosition },
+            size: { width: 600, height: 120 },
+            rotation: 0,
+            style: { 
+              fontSize: '0.9rem', 
+              color: '#2c3e50',
+              fontFamily: 'monospace',
+              backgroundColor: '#f8f9fa',
+              padding: '15px',
+              borderRadius: '8px'
+            }
+          });
+          yPosition += 140;
+        });
+        
+        // 處理引用區塊
+        const blockquotes = tempDiv.querySelectorAll('blockquote');
+        blockquotes.forEach((blockquote, bqIndex) => {
+          elements.push({
+            id: `blockquote-${index}-${bqIndex}`,
+            type: 'text',
+            content: blockquote.innerHTML,
+            position: { x: 120, y: yPosition },
+            size: { width: 560, height: 80 },
+            rotation: 0,
+            style: { 
+              fontSize: '1.1rem', 
+              color: '#6c757d',
+              fontStyle: 'italic',
+              borderLeft: '4px solid #007bff',
+              paddingLeft: '20px',
+              backgroundColor: '#f8f9fa'
+            }
+          });
+          yPosition += 100;
+        });
+        
+        // 如果沒有解析到任何元素，添加一個預設的文字元素
+        if (elements.length === 0) {
+          elements.push({
+            id: `default-${index}`,
+            type: 'text',
+            content: htmlContent || '空白投影片',
+            position: { x: 100, y: 100 },
+            size: { width: 600, height: 400 },
+            rotation: 0,
+            style: { fontSize: '1.2rem', color: '#2c3e50' }
           });
         }
         
