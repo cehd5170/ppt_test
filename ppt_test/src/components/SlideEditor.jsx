@@ -16,6 +16,30 @@ const SlideEditor = () => {
   const [apiEndpoint, setApiEndpoint] = useState('');
   const canvasRef = useRef(null);
 
+  // 動態載入解析套件
+  const loadParsingLibraries = async () => {
+    const libraries = {};
+    
+    try {
+      // 載入 marked (Markdown 解析)
+      if (!window.marked) {
+        await import('https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.2/marked.min.js');
+      }
+      libraries.marked = window.marked;
+      
+      // 載入 js-yaml (YAML 解析，也可用於結構化 Markdown)
+      if (!window.jsyaml) {
+        await import('https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js');
+      }
+      libraries.yaml = window.jsyaml;
+      
+      return libraries;
+    } catch (error) {
+      console.error('載入解析套件失敗:', error);
+      return {};
+    }
+  };
+
   // 初始化範例資料
   useEffect(() => {
     const exampleSlides = [
@@ -49,16 +73,18 @@ const SlideEditor = () => {
   }, []);
 
   // 處理文件上傳
-  const handleFileUpload = (event) => {
+  const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       const content = e.target.result;
       setIsLoading(true);
       
       try {
+        // 載入解析套件
+        const libraries = await loadParsingLibraries();
         let parsedSlides = [];
         
         // 根據文件副檔名自動判斷格式
@@ -68,14 +94,13 @@ const SlideEditor = () => {
         
         switch (format) {
           case 'json':
-            const jsonData = JSON.parse(content);
-            parsedSlides = jsonData.slides || jsonData;
+            parsedSlides = parseJSONWithValidation(content);
             break;
           case 'markdown':
-            parsedSlides = parseMarkdown(content);
+            parsedSlides = await parseMarkdownWithLibrary(content, libraries.marked);
             break;
           case 'xml':
-            parsedSlides = parseXML(content);
+            parsedSlides = parseXMLWithDOMParser(content);
             break;
         }
         
@@ -84,7 +109,7 @@ const SlideEditor = () => {
         alert(`${format.toUpperCase()} 文件載入成功！共 ${parsedSlides.length} 張投影片`);
       } catch (error) {
         console.error('文件解析失敗:', error);
-        alert('文件格式錯誤，請檢查格式是否正確');
+        alert(`文件解析錯誤: ${error.message}`);
       } finally {
         setIsLoading(false);
       }
@@ -103,20 +128,23 @@ const SlideEditor = () => {
     setIsLoading(true);
     try {
       const response = await fetch(endpoint);
-      const data = await response.text();
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
       
+      const data = await response.text();
+      const libraries = await loadParsingLibraries();
       let parsedSlides = [];
       
       switch (format) {
         case 'json':
-          const jsonData = JSON.parse(data);
-          parsedSlides = jsonData.slides || [];
+          parsedSlides = parseJSONWithValidation(data);
           break;
         case 'markdown':
-          parsedSlides = parseMarkdown(data);
+          parsedSlides = await parseMarkdownWithLibrary(data, libraries.marked);
           break;
         case 'xml':
-          parsedSlides = parseXML(data);
+          parsedSlides = parseXMLWithDOMParser(data);
           break;
       }
       
@@ -125,52 +153,212 @@ const SlideEditor = () => {
       alert(`API 資料載入成功！共 ${parsedSlides.length} 張投影片`);
     } catch (error) {
       console.error('載入失敗:', error);
-      alert('載入資料失敗，請檢查 API 端點和網路連線');
+      alert(`載入失敗: ${error.message}`);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 簡化的 Markdown 解析
-  const parseMarkdown = (data) => {
-    const slideTexts = data.split('---').filter(text => text.trim());
-    return slideTexts.map((slideText, index) => ({
-      id: index + 1,
-      background: '#ffffff',
-      elements: [{
-        id: `text-${index}`,
-        type: 'text',
-        content: slideText.trim(),
-        position: { x: 100, y: 100 },
-        size: { width: 600, height: 400 },
-        rotation: 0,
-        style: { fontSize: '1.2rem', color: '#2c3e50' }
-      }]
-    }));
+  // 使用 JSON.parse 和 JSON Schema 驗證的 JSON 解析
+  const parseJSONWithValidation = (jsonString) => {
+    try {
+      const data = JSON.parse(jsonString);
+      
+      // 驗證 JSON 結構
+      if (!data) {
+        throw new Error('JSON 資料為空');
+      }
+      
+      // 如果是投影片陣列
+      if (Array.isArray(data)) {
+        return data.map((slide, index) => ({
+          id: slide.id || index + 1,
+          background: slide.background || '#ffffff',
+          elements: Array.isArray(slide.elements) ? slide.elements.map(el => ({
+            id: el.id || `element-${Date.now()}-${Math.random()}`,
+            type: el.type || 'text',
+            ...el,
+            position: el.position || { x: 100, y: 100 },
+            size: el.size || { width: 200, height: 100 },
+            rotation: el.rotation || 0
+          })) : []
+        }));
+      }
+      
+      // 如果有 slides 屬性
+      if (data.slides && Array.isArray(data.slides)) {
+        return parseJSONWithValidation(JSON.stringify(data.slides));
+      }
+      
+      // 如果是單一投影片物件
+      if (data.elements || data.background) {
+        return [data];
+      }
+      
+      throw new Error('無法識別的 JSON 格式，需要包含 slides 陣列或 elements');
+      
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error(`JSON 語法錯誤: ${error.message}`);
+      }
+      throw error;
+    }
   };
 
-  // 簡化的 XML 解析
-  const parseXML = (data) => {
+  // 使用 marked 套件的 Markdown 解析
+  const parseMarkdownWithLibrary = async (markdownString, marked) => {
+    if (!marked) {
+      throw new Error('Marked 套件載入失敗，使用簡化解析');
+    }
+    
+    try {
+      // 分割投影片（使用 --- 分隔）
+      const slideTexts = markdownString.split(/^---$/gm).filter(text => text.trim());
+      
+      return slideTexts.map((slideText, index) => {
+        const trimmedText = slideText.trim();
+        
+        // 使用 marked 解析 HTML
+        const htmlContent = marked.parse(trimmedText);
+        
+        // 提取標題作為主要元素
+        const titleMatch = trimmedText.match(/^#\s+(.+)$/m);
+        const title = titleMatch ? titleMatch[1] : `投影片 ${index + 1}`;
+        
+        const elements = [
+          {
+            id: `title-${index}`,
+            type: 'text',
+            content: title,
+            position: { x: 100, y: 100 },
+            size: { width: 600, height: 80 },
+            rotation: 0,
+            style: { fontSize: '2.5rem', fontWeight: 'bold', color: '#2c3e50', textAlign: 'center' }
+          }
+        ];
+        
+        // 如果有更多內容，添加為文字元素
+        const contentWithoutTitle = trimmedText.replace(/^#.+$/m, '').trim();
+        if (contentWithoutTitle) {
+          elements.push({
+            id: `content-${index}`,
+            type: 'text',
+            content: marked.parse(contentWithoutTitle),
+            position: { x: 100, y: 200 },
+            size: { width: 600, height: 300 },
+            rotation: 0,
+            style: { fontSize: '1.2rem', color: '#2c3e50' }
+          });
+        }
+        
+        // 檢查是否有特殊形狀標記
+        const shapeMatch = trimmedText.match(/\[shape:(\w+):(\w+):(.+)\]/);
+        if (shapeMatch) {
+          const [, shapeType, color, labels] = shapeMatch;
+          elements.push({
+            id: `shape-${index}`,
+            type: 'shape',
+            shapeType: shapeType,
+            color: color,
+            labels: labels.split(',').map(l => l.trim()),
+            position: { x: 200, y: 250 },
+            size: { width: 400, height: 300 },
+            rotation: 0
+          });
+        }
+        
+        return {
+          id: index + 1,
+          background: '#ffffff',
+          elements
+        };
+      });
+      
+    } catch (error) {
+      throw new Error(`Markdown 解析錯誤: ${error.message}`);
+    }
+  };
+
+  // 使用 DOMParser 的 XML 解析
+  const parseXMLWithDOMParser = (xmlString) => {
     try {
       const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(data, 'text/xml');
+      const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
+      
+      // 檢查 XML 解析錯誤
+      const parserError = xmlDoc.querySelector('parsererror');
+      if (parserError) {
+        throw new Error(`XML 格式錯誤: ${parserError.textContent}`);
+      }
+      
       const slideNodes = xmlDoc.querySelectorAll('slide');
       
-      return Array.from(slideNodes).map((slide, index) => ({
-        id: index + 1,
-        background: '#ffffff',
-        elements: [{
-          id: `text-${index}`,
-          type: 'text',
-          content: slide.textContent || 'XML 內容',
-          position: { x: 100, y: 100 },
-          size: { width: 600, height: 400 },
-          rotation: 0,
-          style: { fontSize: '1.2rem', color: '#2c3e50' }
-        }]
-      }));
+      if (slideNodes.length === 0) {
+        throw new Error('XML 中沒有找到 <slide> 元素');
+      }
+      
+      return Array.from(slideNodes).map((slideNode, index) => {
+        const elements = [];
+        
+        // 解析文字元素
+        Array.from(slideNode.querySelectorAll('text')).forEach((textNode, textIndex) => {
+          elements.push({
+            id: `text-${index}-${textIndex}`,
+            type: 'text',
+            content: textNode.textContent || '空白文字',
+            position: { 
+              x: parseInt(textNode.getAttribute('x')) || 100, 
+              y: parseInt(textNode.getAttribute('y')) || 100 
+            },
+            size: { 
+              width: parseInt(textNode.getAttribute('width')) || 200, 
+              height: parseInt(textNode.getAttribute('height')) || 50 
+            },
+            style: {
+              fontSize: textNode.getAttribute('fontSize') || '1rem',
+              color: textNode.getAttribute('color') || '#000000',
+              fontWeight: textNode.getAttribute('fontWeight') || 'normal'
+            },
+            rotation: parseInt(textNode.getAttribute('rotation')) || 0
+          });
+        });
+
+        // 解析形狀元素
+        Array.from(slideNode.querySelectorAll('shape')).forEach((shapeNode, shapeIndex) => {
+          const labels = Array.from(shapeNode.querySelectorAll('label')).map(label => 
+            label.textContent || '標籤'
+          );
+          
+          elements.push({
+            id: `shape-${index}-${shapeIndex}`,
+            type: 'shape',
+            shapeType: shapeNode.getAttribute('type') || 'rectangle',
+            color: shapeNode.getAttribute('color') || 'blue',
+            labels: labels.length > 0 ? labels : ['預設標籤'],
+            position: { 
+              x: parseInt(shapeNode.getAttribute('x')) || 200, 
+              y: parseInt(shapeNode.getAttribute('y')) || 200 
+            },
+            size: { 
+              width: parseInt(shapeNode.getAttribute('width')) || 300, 
+              height: parseInt(shapeNode.getAttribute('height')) || 200 
+            },
+            rotation: parseInt(shapeNode.getAttribute('rotation')) || 0
+          });
+        });
+
+        return {
+          id: parseInt(slideNode.getAttribute('id')) || index + 1,
+          background: slideNode.getAttribute('background') || '#ffffff',
+          elements
+        };
+      });
+      
     } catch (error) {
-      return [];
+      if (error.message.includes('XML')) {
+        throw error;
+      }
+      throw new Error(`XML 解析錯誤: ${error.message}`);
     }
   };
 
